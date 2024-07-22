@@ -1,15 +1,20 @@
 package com.example.downloadsample.downloader
 
+import android.app.PendingIntent
 import android.content.Context
+import android.content.pm.ServiceInfo
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
+import androidx.work.ForegroundInfo
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import com.example.downloadsample.R
 import dagger.Module
 import dagger.Provides
 import dagger.assisted.Assisted
@@ -21,6 +26,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import javax.inject.Inject
@@ -53,6 +59,16 @@ class DownloadManager @Inject constructor(
             OneTimeWorkRequestBuilder<DownloadWorker>()
                 .setInputData(Data.Builder().putString("uuid", uuid).build())
                 .addTag("download")
+                .build(),
+        )
+        startNotificationWorker()
+    }
+
+    private fun startNotificationWorker() {
+        workManager.enqueueUniqueWork(
+            "download-notification",
+            ExistingWorkPolicy.KEEP,
+            OneTimeWorkRequestBuilder<NotificationWorker>()
                 .build(),
         )
     }
@@ -106,6 +122,53 @@ sealed class DownloadStatus(open val progress: Float) {
     data object NotDownloaded : DownloadStatus(0f)
     data object Downloaded : DownloadStatus(1f)
     data class Downloading(override val progress: Float) : DownloadStatus(progress)
+}
+
+
+@HiltWorker
+class NotificationWorker @AssistedInject constructor(
+    @Assisted appContext: Context,
+    @Assisted workerParams: WorkerParameters,
+    private val downloadManager: DownloadManager,
+) : CoroutineWorker(appContext, workerParams) {
+    companion object {
+        const val CHANNEL_ID = "main"
+        const val NOTIFICATION_ID = 1
+    }
+
+    override suspend fun doWork(): Result {
+
+        setForeground(getForegroundInfo(TotalStatus.EMPTY))
+
+        downloadManager.observeTotalStatus()
+            .takeWhile { it.total != it.downloaded }
+            .collect { totalStatus ->
+                setForeground(getForegroundInfo(totalStatus))
+            }
+        return Result.success()
+    }
+
+    private fun getForegroundInfo(totalStatus: TotalStatus): ForegroundInfo {
+        val intent = applicationContext.packageManager.getLaunchIntentForPackage(applicationContext.packageName)
+        return ForegroundInfo(
+            NOTIFICATION_ID,
+            NotificationCompat.Builder(applicationContext, CHANNEL_ID)
+                .setContentTitle("downloading ${totalStatus.downloaded} / ${totalStatus.total}")
+                .setProgress(totalStatus.total, totalStatus.downloaded, false)
+                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+                .setContentIntent(
+                    PendingIntent.getActivity(
+                        applicationContext,
+                        0,
+                        intent,
+                        PendingIntent.FLAG_IMMUTABLE,
+                    ),
+                )
+                .build(),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+        )
+    }
 }
 
 @HiltWorker

@@ -30,7 +30,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 
 
-val UUIDS = List(30) { "task$it" }
+val UUIDS = List(100) { "task$it" }
 
 @Composable
 fun MainScreen(
