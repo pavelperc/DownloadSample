@@ -19,9 +19,14 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.random.Random
+import kotlin.random.nextLong
 
 const val TAG = "TAGG"
 
@@ -37,12 +42,17 @@ class AppModule {
 class DownloadManager @Inject constructor(
     private val workManager: WorkManager,
 ) {
+    fun start(uuids: List<String>) {
+        uuids.forEach { start(it) }
+    }
+
     fun start(uuid: String) {
         workManager.enqueueUniqueWork(
             "download-$uuid",
             ExistingWorkPolicy.KEEP,
             OneTimeWorkRequestBuilder<DownloadWorker>()
                 .setInputData(Data.Builder().putString("uuid", uuid).build())
+                .addTag("download")
                 .build(),
         )
     }
@@ -52,22 +62,42 @@ class DownloadManager @Inject constructor(
     }
 
     fun deleteAll() {
+        workManager.cancelAllWork()
         workManager.pruneWork()
+    }
+
+    fun observeTotalStatus(): Flow<TotalStatus> {
+        return workManager.getWorkInfosByTagFlow("download")
+            .conflate()
+            .map { workInfos ->
+                TotalStatus(
+                    downloaded = workInfos.count { it.state == WorkInfo.State.SUCCEEDED },
+                    total = workInfos.size,
+                )
+            }
     }
 
     fun observeStatus(uuid: String): Flow<DownloadStatus> {
         return workManager.getWorkInfosForUniqueWorkFlow("download-$uuid")
-            .map { it.firstOrNull() }
-            .map {
-                when (it?.state) {
-                    WorkInfo.State.SUCCEEDED -> DownloadStatus.Downloaded
-                    WorkInfo.State.RUNNING ->
-                        DownloadStatus.Downloading(it.progress.getFloat("progress", 0f))
-
-                    else -> DownloadStatus.NotDownloaded
-                }
-            }
+            .map { it.firstOrNull().toDownloadStatus() }
     }
+
+    private fun WorkInfo?.toDownloadStatus() = when (this?.state) {
+        WorkInfo.State.SUCCEEDED -> DownloadStatus.Downloaded
+        WorkInfo.State.RUNNING -> DownloadStatus.Downloading(this.progress.getFloat("progress", 0f))
+        else -> DownloadStatus.NotDownloaded
+    }
+}
+
+data class TotalStatus(
+    val downloaded: Int,
+    val total: Int,
+) {
+    companion object {
+        val EMPTY = TotalStatus(0, 0)
+    }
+
+    val progress get() = if (total == 0) 0f else downloaded / total.toFloat()
 }
 
 sealed class DownloadStatus(open val progress: Float) {
@@ -84,15 +114,24 @@ class DownloadWorker @AssistedInject constructor(
     @Assisted workerParams: WorkerParameters,
 ) : CoroutineWorker(appContext, workerParams) {
 
+    companion object {
+        val semaphore = Semaphore(3)
+    }
+
     override suspend fun doWork(): Result {
-        Log.d(TAG, "start download")
-        repeat(10) {
-            val progress = it / 10f
-            setProgress(Data.Builder().putFloat("progress", progress).build())
-            Log.d(TAG, "download progress $progress")
-            delay(100)
+        val uuid = inputData.getString("uuid") ?: error("no uuid")
+        Log.d(TAG, "download start uuid $uuid")
+        semaphore.withPermit {
+            val delay = Random.nextLong(100L..200L)
+            repeat(10) {
+                val progress = it / 10f
+                setProgress(Data.Builder().putFloat("progress", progress).build())
+                Log.d(TAG, "download progress $progress, uuid $uuid")
+                delay(delay)
+            }
+            setProgress(Data.Builder().putFloat("progress", 1f).build())
+            Log.d(TAG, "download finished uuid $uuid")
         }
-        setProgress(Data.Builder().putFloat("progress", 1f).build())
         return Result.success()
     }
 }

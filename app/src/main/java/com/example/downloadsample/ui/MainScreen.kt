@@ -3,6 +3,7 @@ package com.example.downloadsample.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -23,20 +24,25 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.downloadsample.downloader.DownloadManager
 import com.example.downloadsample.downloader.DownloadStatus
+import com.example.downloadsample.downloader.TotalStatus
 import com.example.downloadsample.ui.theme.DownloadSampleTheme
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 
 
-val UUIDS = List(10) { "task$it" }
+val UUIDS = List(30) { "task$it" }
 
 @Composable
 fun MainScreen(
     downloadManager: DownloadManager,
 ) {
+    val totalStatus by downloadManager.observeTotalStatus()
+        .collectAsStateWithLifecycle(TotalStatus.EMPTY)
+
     MainScreen(
         uuids = UUIDS,
         observeDownloadStatus = downloadManager::observeStatus,
+        totalStatus = totalStatus,
         onItemClick = { uuid, status ->
             when (status) {
                 DownloadStatus.NotDownloaded -> downloadManager.start(uuid)
@@ -45,27 +51,48 @@ fun MainScreen(
             }
         },
         onDeleteAllClick = { downloadManager.deleteAll() },
+        onDownloadAllClick = { downloadManager.start(UUIDS) },
     )
 }
 
 @Composable
 fun MainScreen(
     uuids: List<String>,
+    totalStatus: TotalStatus,
     observeDownloadStatus: (uuid: String) -> Flow<DownloadStatus>,
     onItemClick: (uuid: String, status: DownloadStatus) -> Unit = { _, _ -> },
     onDeleteAllClick: () -> Unit = {},
+    onDownloadAllClick: () -> Unit = {},
 ) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp)
             .background(MaterialTheme.colorScheme.background),
     ) {
-        Button(onClick = onDeleteAllClick) {
-            Text(text = "Delete all")
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 16.dp, start = 16.dp, end = 16.dp),
+        ) {
+            Button(onClick = onDownloadAllClick) {
+                Text(text = "Download all")
+            }
+            Button(onClick = onDeleteAllClick) {
+                Text(text = "Delete all")
+            }
+            Text(
+                text = "total - ${totalStatus.downloaded} / ${totalStatus.total}",
+                color = MaterialTheme.colorScheme.primary,
+            )
+            LinearProgressIndicator(
+                modifier = Modifier.fillMaxWidth(),
+                progress = { totalStatus.progress },
+                strokeCap = StrokeCap.Round,
+            )
         }
         LazyColumn(
             verticalArrangement = Arrangement.spacedBy(16.dp),
+            contentPadding = PaddingValues(16.dp),
         ) {
             items(uuids) { uuid ->
                 ObservableDownloadItem(
@@ -141,6 +168,7 @@ fun MainScreenPreview() {
         MainScreen(
             uuids = UUIDS,
             observeDownloadStatus = { flowOf(DownloadStatus.Downloading(0.2f)) },
+            totalStatus = TotalStatus(2, 5),
         )
     }
 }
